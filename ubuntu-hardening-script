@@ -1,26 +1,60 @@
 #!/bin/bash
 
+# Enable strict mode
+set -euo pipefail
+
+# Function to update and clean the system
+function update_system {
+  # Update system packages
+  if ! sudo /usr/bin/apt-get update; then
+    echo "Failed to update system packages"
+    exit 1
+  fi
+
+  # Upgrade system packages
+  if ! sudo /usr/bin/apt-get upgrade -y; then
+    echo "Failed to upgrade system packages"
+    exit 1
+  fi
+
+  # Remove unnecessary packages
+  if ! sudo /usr/bin/apt-get autoremove -y; then
+    echo "Failed to remove unnecessary packages"
+    exit 1
+  fi
+
+  # Clean up the apt cache
+  if ! sudo /usr/bin/apt-get autoclean; then
+    echo "Failed to clean the apt cache"
+    exit 1
+  fi
+
+  echo "System updated and cleaned up successfully"
+}
+
 # Function to handle repetitive tasks
 function handle_task {
-  if ! $1; then
+  if ! "$1"; then
     echo "Error: $2"
-    errors+=1
+    errors+=("$2")
   fi
 }
 
-# Initialize error count
-errors=0
+# Initialize error array
+declare -a errors=()
+
+# Call the update_system function
+update_system
 
 # Check if running as root
-if [ "$EUID" -ne 0 ]
-then 
+if [ "$EUID" -ne 0 ]; then 
   echo "Please run as root"
   exit 1
 fi
 
 # Prompt for all details
 read -p "Enter new username: " username
-read -sp "Enter new password: " password
+read -s -p "Enter new password: " password
 echo
 read -p "Enter SSH port: " ssh_port
 read -p "Enter hostname: " hostname
@@ -28,57 +62,67 @@ read -p "Enter timezone (e.g., Australia/Brisbane): " timezone
 read -p "Enter Ubuntu Pro token: " token
 echo
 
-# Update system packages
-handle_task "sudo apt update && sudo apt upgrade -y" "Failed to update system packages"
+# Validate input
+if [[ ! "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+  errors+=("Invalid username. Username must start with a lowercase letter or underscore, followed by lowercase letters, numbers, underscores, or hyphens.")
+fi
+
+if [ ${#password} -lt 8 ]; then
+  errors+=("Password must be at least 8 characters long.")
+fi
+
+if ! [[ "$ssh_port" =~ ^[0-9]+$ ]] || [ "$ssh_port" -lt 1 ] || [ "$ssh_port" -gt 65535 ]; then
+  errors+=("Invalid SSH port. Please enter a valid port number between 1 and 65535.")
+fi
 
 # Install necessary packages
-handle_task "sudo apt install fail2ban ufw -y" "Failed to install fail2ban and ufw"
+handle_task "sudo /usr/bin/apt install fail2ban ufw -y" "Failed to install fail2ban and ufw"
 
 # Disable root login via SSH
-handle_task "sudo sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config" "Failed to disable root login via SSH"
+handle_task "sudo /usr/bin/sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config" "Failed to disable root login via SSH"
 
 # Create a new user and set the password
-handle_task "sudo adduser $username --gecos '' --disabled-password" "Failed to create new user"
-handle_task "echo '$username:$password' | sudo chpasswd" "Failed to set password for new user"
+handle_task "sudo /usr/sbin/adduser $username --gecos '' --disabled-password" "Failed to create new user"
+handle_task "echo '$username:$password' | sudo /usr/sbin/chpasswd" "Failed to set password for new user"
 
 # Enable password authentication via SSH for new user
-handle_task "echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config" "Failed to enable password authentication via SSH"
+handle_task "sudo /usr/bin/sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config" "Failed to enable password authentication via SSH"
 
 # Restart sshd
 handle_task "sudo systemctl restart sshd" "Failed to restart sshd"
 
 # Add user to sudo group
-handle_task "sudo usermod -aG sudo $username" "Failed to add new user to sudo group"
+handle_task "sudo /usr/sbin/usermod -aG sudo $username" "Failed to add new user to sudo group"
 
 # Change the hostname
-handle_task "sudo hostnamectl set-hostname $hostname" "Failed to change the hostname"
+handle_task "sudo /usr/bin/hostnamectl set-hostname $hostname" "Failed to change the hostname"
 
 # Change the default SSH port
-handle_task "sudo sed -i 's/#Port 22/Port $ssh_port/' /etc/ssh/sshd_config" "Failed to change the default SSH port"
+handle_task "sudo /usr/bin/sed -i 's/#Port 22/Port $ssh_port/' /etc/ssh/sshd_config" "Failed to change the default SSH port"
 
 # Update timezone data
-handle_task "sudo timedatectl set-timezone $timezone" "Failed to set timezone"
+handle_task "sudo /usr/bin/timedatectl set-timezone $timezone" "Failed to set timezone"
 
 # Configure fail2ban
-handle_task "sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local" "Failed to create fail2ban local configuration"
-handle_task "sudo sed -i 's/bantime  = 10m/bantime  = 1h/' /etc/fail2ban/jail.local" "Failed to set fail2ban bantime"
-handle_task "sudo sed -i 's/findtime  = 10m/findtime  = 5m/' /etc/fail2ban/jail.local" "Failed to set fail2ban findtime"
-handle_task "sudo sed -i 's/maxretry = 5/maxretry = 3/' /etc/fail2ban/jail.local" "Failed to set fail2ban maxretry"
+handle_task "sudo /usr/bin/cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local" "Failed to create fail2ban local configuration"
+handle_task "sudo /usr/bin/sed -i 's/bantime  = 10m/bantime  = 1h/' /etc/fail2ban/jail.local" "Failed to set fail2ban bantime"
+handle_task "sudo /usr/bin/sed -i 's/findtime  = 10m/findtime  = 5m/' /etc/fail2ban/jail.local" "Failed to set fail2ban findtime"
+handle_task "sudo /usr/bin/sed -i 's/maxretry = 5/maxretry = 3/' /etc/fail2ban/jail.local" "Failed to set fail2ban maxretry"
 
 # Restart fail2ban
 handle_task "sudo systemctl restart fail2ban" "Failed to restart fail2ban"
 
 # Configure UFW
-handle_task "sudo ufw default deny incoming" "Failed to configure UFW"
-handle_task "sudo ufw default allow outgoing" "Failed to configure UFW"
-handle_task "sudo ufw allow $ssh_port/tcp" "Failed to configure UFW"
+handle_task "sudo /usr/sbin/ufw default deny incoming" "Failed to configure UFW"
+handle_task "sudo /usr/sbin/ufw default allow outgoing" "Failed to configure UFW"
+handle_task "sudo /usr/sbin/ufw allow $ssh_port/tcp" "Failed to configure UFW"
 
 # Enable UFW
-handle_task "sudo ufw enable" "Failed to enable UFW"
+handle_task "sudo /usr/sbin/ufw enable" "Failed to enable UFW"
 
 # Install & Attach Ubuntu Pro
-handle_task "sudo apt install ubuntu-advantage-tools" "Failed to install Ubuntu Pro"
-handle_task "sudo ua attach $token" "Failed to attach Ubuntu Pro token"
+handle_task "sudo /usr/bin/apt install ubuntu-advantage-tools" "Failed to install Ubuntu Pro"
+handle_task "sudo /usr/bin/ua attach $token" "Failed to attach Ubuntu Pro token"
 
 # Display detailed summary
 echo "------------------------------------"
@@ -86,11 +130,17 @@ echo "Summary:"
 echo "Username: $username"
 echo "SSH port: $ssh_port"
 echo "Hostname: $(hostname)"
-echo "Timezone: $(timedatectl show --format='value' --value --property=Timezone)"
+echo "Timezone: $(sudo /usr/bin/timedatectl show --format='value' --value --property=Timezone)"
 echo "Fail2Ban status: $(sudo systemctl is-active fail2ban)"
-echo "UFW status: $(sudo ufw status verbose)"
-echo "Ubuntu Pro status: $(sudo ua status)"
-echo "Number of Errors: $errors"
+echo "UFW status: $(sudo /usr/sbin/ufw status verbose)"
+echo "Ubuntu Pro status: $(sudo /usr/bin/ua status)"
+echo "Number of Errors: ${#errors[@]}"
+if [ ${#errors[@]} -gt 0 ]; then
+  echo "Errors:"
+  for error in "${errors[@]}"; do
+    echo "- $error"
+  done
+fi
 echo "------------------------------------"
 
 exit 0
