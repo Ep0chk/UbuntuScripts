@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# Function to handle repetitive tasks
+function handle_task {
+  if ! $1; then
+    echo "Error: $2"
+    errors+=1
+  fi
+}
+
+# Initialize error count
+errors=0
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]
+then 
+  echo "Please run as root"
+  exit 1
+fi
+
+# Prompt for all details
+read -p "Enter new username: " username
+read -sp "Enter new password: " password
+echo
+read -p "Enter SSH port: " ssh_port
+read -p "Enter hostname: " hostname
+read -p "Enter timezone (e.g., Australia/Brisbane): " timezone
+read -p "Enter Ubuntu Pro token: " token
+echo
+
+# Update system packages
+handle_task "sudo apt update && sudo apt upgrade -y" "Failed to update system packages"
+
+# Install necessary packages
+handle_task "sudo apt install fail2ban ufw -y" "Failed to install fail2ban and ufw"
+
+# Disable root login via SSH
+handle_task "sudo sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config" "Failed to disable root login via SSH"
+
+# Create a new user and set the password
+handle_task "sudo adduser $username --gecos '' --disabled-password" "Failed to create new user"
+handle_task "echo '$username:$password' | sudo chpasswd" "Failed to set password for new user"
+
+# Enable password authentication via SSH for new user
+handle_task "echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config" "Failed to enable password authentication via SSH"
+
+# Restart sshd
+handle_task "sudo systemctl restart sshd" "Failed to restart sshd"
+
+# Add user to sudo group
+handle_task "sudo usermod -aG sudo $username" "Failed to add new user to sudo group"
+
+# Change the hostname
+handle_task "sudo hostnamectl set-hostname $hostname" "Failed to change the hostname"
+
+# Change the default SSH port
+handle_task "sudo sed -i 's/#Port 22/Port $ssh_port/' /etc/ssh/sshd_config" "Failed to change the default SSH port"
+
+# Update timezone data
+handle_task "sudo timedatectl set-timezone $timezone" "Failed to set timezone"
+
+# Configure fail2ban
+handle_task "sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local" "Failed to create fail2ban local configuration"
+handle_task "sudo sed -i 's/bantime  = 10m/bantime  = 1h/' /etc/fail2ban/jail.local" "Failed to set fail2ban bantime"
+handle_task "sudo sed -i 's/findtime  = 10m/findtime  = 5m/' /etc/fail2ban/jail.local" "Failed to set fail2ban findtime"
+handle_task "sudo sed -i 's/maxretry = 5/maxretry = 3/' /etc/fail2ban/jail.local" "Failed to set fail2ban maxretry"
+
+# Restart fail2ban
+handle_task "sudo systemctl restart fail2ban" "Failed to restart fail2ban"
+
+# Configure UFW
+handle_task "sudo ufw default deny incoming" "Failed to configure UFW"
+handle_task "sudo ufw default allow outgoing" "Failed to configure UFW"
+handle_task "sudo ufw allow $ssh_port/tcp" "Failed to configure UFW"
+
+# Enable UFW
+handle_task "sudo ufw enable" "Failed to enable UFW"
+
+# Install & Attach Ubuntu Pro
+handle_task "sudo apt install ubuntu-advantage-tools" "Failed to install Ubuntu Pro"
+handle_task "sudo ua attach $token" "Failed to attach Ubuntu Pro token"
+
+# Display detailed summary
+echo "------------------------------------"
+echo "Summary:"
+echo "Username: $username"
+echo "SSH port: $ssh_port"
+echo "Hostname: $(hostname)"
+echo "Timezone: $(timedatectl show --format='value' --value --property=Timezone)"
+echo "Fail2Ban status: $(sudo systemctl is-active fail2ban)"
+echo "UFW status: $(sudo ufw status verbose)"
+echo "Ubuntu Pro status: $(sudo ua status)"
+echo "Number of Errors: $errors"
+echo "------------------------------------"
+
+exit 0
